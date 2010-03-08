@@ -40,10 +40,9 @@
 #define SPI_BUFF_SIZE	512
 #define USER_BUFF_SIZE	128
 
-#define NUM_TRANSFERS	8
+#define NUM_TRANSFERS	16
 
 #define BASE_BUS_SPEED 100000
-
 
 
 static int bus_speed = BASE_BUS_SPEED;
@@ -54,8 +53,8 @@ static int show_mknod_msg = 1;
 static int running = 0;
 
 struct adc_message {
-	int async_count;
-	int work_count;
+	u16 idx;
+	u16 avg;
 	struct list_head list;
 	struct completion completion;
 	struct spi_message msg;
@@ -85,12 +84,14 @@ static int adc_async(struct adc_message *adc_msg);
 
 static void adc_workq_handler(struct work_struct *work)
 {
+	int i;
+	u32 avg;
 	struct adc_message *adc_msg;
 	struct adc_message *next;
 
 	/* 
 	  get everything out of the done_list and into the work_list
-	  so we don't hold up adc_async_complete()
+	  so we don't hold up adc_async_complete() with the list_lock
 	*/
 	mutex_lock(&list_lock);
 	list_for_each_entry_safe(adc_msg, next, &done_list, list) {
@@ -103,8 +104,16 @@ static void adc_workq_handler(struct work_struct *work)
 	list_for_each_entry_safe(adc_msg, next, &work_list, list) {
 		list_del_init(&adc_msg->list);
 
-		/* process data */
-		adc_msg->work_count++;
+		avg = 0;
+		for (i = 0; i < NUM_TRANSFERS * 2; i += 2)
+			avg += 0x3ff & ((adc_msg->rx_buff[i] << 8) 
+						+ adc_msg->rx_buff[i+1]);	
+			
+		if (down_interruptible(&adc_dev.spi_sem))
+			return;
+
+		adc_msg->avg  = avg / NUM_TRANSFERS;
+		up(&adc_dev.spi_sem);
 
 		/* resubmit the message */		
 		if (running)
@@ -119,8 +128,6 @@ static void adc_async_complete(void *arg)
 {
 	struct adc_message *adc_msg = (struct adc_message *) arg;
 	
-	adc_msg->async_count++;
-
 	mutex_lock(&list_lock);
 	list_add_tail(&adc_msg->list, &done_list);
 	mutex_unlock(&list_lock);
@@ -160,7 +167,7 @@ static int adc_async(struct adc_message *adc_msg)
 	for (i = 0; i < NUM_TRANSFERS; i++) {
 		adc_msg->transfer[i].tx_buf = adc_msg->tx_buff;
 		adc_msg->transfer[i].rx_buf = &adc_msg->rx_buff[i*2];
-		adc_msg->transfer[i].len = 1;
+		adc_msg->transfer[i].len = 2;
 		adc_msg->transfer[i].cs_change = 1;
 		adc_msg->transfer[i].speed_hz = 0;
 		spi_message_add_tail(&adc_msg->transfer[i], message);
@@ -179,46 +186,47 @@ static ssize_t adc_write(struct file *filp, const char __user *buff,
 		size_t count, loff_t *f_pos)
 {
 	ssize_t	status;
-	/*
 	size_t len;
-	*/
-
+	
 	if(down_interruptible(&adc_dev.fop_sem))
 		return -ERESTARTSYS;
 
-	/*
 	memset(adc_dev.user_buff, 0, 32);
-	len = count > 16 ? 16 : count;
+	len = count > 8 ? 8 : count;
 
 	if (copy_from_user(adc_dev.user_buff, buff, len)) {
 		status = -EFAULT;
 		goto adc_write_done;
 	}
-	
+
 	status = count;
-	*/
-	if (running) { 
-		running = 0;
-	}
-	else {
+
+	/* we accept two commands, "on" or "off" and ignore anything else*/
+	if (!running && !strnicmp(adc_dev.user_buff, "on", 2)) {
 		status = adc_async(&adc_dev.adc_msg);
 		if (status)
 			printk(KERN_ALERT "adc_write(): adc_async() returned %d\n",
 				status);
-		else
+		else {
 			running = 1; 
+			status = count;
+		}
+	}
+	else if (!strnicmp(adc_dev.user_buff, "off", 3)) {
+		running = 0;
 	}
 
+adc_write_done:
 	up(&adc_dev.fop_sem);
 
-	return count;
+	return status;
 }
 
 static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 			loff_t *offp)
 {
 	size_t len;
-	ssize_t error = 0;
+	ssize_t status = 0;
 
 	if (!buff) 
 		return -EFAULT;
@@ -230,10 +238,10 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 	if (down_interruptible(&adc_dev.fop_sem)) 
 		return -ERESTARTSYS;
 
-	/* need to synchronize this */
-	sprintf(adc_dev.user_buff, "ADC: %d  %d\n", 
-		adc_dev.adc_msg.async_count,
-		adc_dev.adc_msg.work_count);
+	if (running)
+		sprintf(adc_dev.user_buff, "ADC: %u\n", adc_dev.adc_msg.avg);
+	else
+		strcpy(adc_dev.user_buff, "ADC: off\n");
 
 	len = strlen(adc_dev.user_buff);
  
@@ -242,16 +250,16 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 
 	if (copy_to_user(buff, adc_dev.user_buff, count))  {
 		printk(KERN_ALERT "adc_read(): copy_to_user() failed\n");
-		error = -EFAULT;
+		status = -EFAULT;
 	}
 	else {
 		*offp += count;
-		error = count;
+		status = count;
 	}
 
 	up(&adc_dev.fop_sem);
 
-	return error;	
+	return status;	
 }
 
 static int adc_open(struct inode *inode, struct file *filp)
@@ -353,7 +361,8 @@ static int __init add_adc_device_to_bus(void)
 			spi_device->chip_select);
 
 		if (bus_find_device_by_name(spi_device->dev.bus, NULL, buff)) {
-			/* we are already registered, nothing to do but free the spi_device */
+			/* we are already registered, nothing to do, just free the spi_device 
+			   this crashes unless you have a patched omap2_mcspi_cleanup9) */
 			spi_dev_put(spi_device);
 			status = 0;
 			show_mknod_msg = 0;		
