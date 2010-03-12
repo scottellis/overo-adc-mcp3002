@@ -1,0 +1,50 @@
+An example SPI driver using some Microchip MCP3002 ADC's as the slave devices
+connected to a Gumstix Overo off the SPI1 header pins.  I have two of the ADCs
+hooked up to CS0 and CS1. 
+
+This driver probably works with Beagleboards too, with some changes for the
+exposed SPI module. I haven't checked yet.
+
+The Makefile assumes you are using the included source-me.txt and have a
+working OE cross-build environment set up.
+
+You should not have the ADS7846 touchscreen driver enabled in your kernel
+either as a module or built-in or you won't be able to load this device.
+Can't have two devices asking for the same CS0 line.
+
+There are some required kernel patches in order to handle the dynamic 
+adding of spi devices. They've all been submitted to the linux-omap list
+but it may be awhile before they show up in the gumstix kernel.  
+
+I provided the patches in this project until then.
+
+Assuming your running 2.6.32, copy the patches 1-6 to 
+
+../recipes/linux/linux-omap3-2.6.32/
+
+and then patch your 
+
+../recipes/linux/linux-omap3_2.6.32.bb 
+
+with the recipe patch.
+
+The interface is a character device. It will prompt you for the mknod
+command when you insert the module.
+
+The write commands are on and off
+echo on > /dev/adc
+echo off > /dev/adc
+
+The read command returns either
+ADC: off
+or 
+ADC: <adc_1_val> <adc_2_val>
+
+The omap2_mcspi module needs to be loaded before adc.ko
+
+The driver is for playing around with Linux OMAP3 SPI stuff. It's not 
+for production. There are printk's galore and they are all ALERTS of 
+course.
+
+Enjoy.
+ 
