@@ -1,5 +1,5 @@
 /*
-  adc.c - Messing around with OMAP3 SPI
+  adc.c
  
   Copyright Scott Ellis, 2010
  
@@ -17,8 +17,9 @@
   along with this program; if not, write to the Free Software
   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  
+  Just fooling around exploring features of the Linux OMAP3 SPI driver
+  framework. The test devices are Micrologic MCP3002 10-bit ADCs.
 */
-
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/ioctl.h>
@@ -37,24 +38,38 @@
 #include <linux/list.h>
 #include <linux/workqueue.h>
 
-#define SPI_BUFF_SIZE	512
+/* averaging four reads, no particular reason */
+#define NUM_TRANSFERS	4
+#define NUM_DEVICES	2
+
+#define SPI_BUFF_SIZE	(NUM_TRANSFERS * 2)
 #define USER_BUFF_SIZE	128
 
-#define NUM_TRANSFERS	16
+/* 
+At 5v the max speed the MCP3002's can handle is 200k samples/sec.
+At 16 bits per sample this translates to 3.2M as the max clock speed.
+The McSPI controller available speeds are
+48M / (1 << 1) -> 48M
+48M / (1 << 2) -> 24M
+48M / (1 << 3) -> 12M
+48M / (1 << 4) -> 6M
+48M / (1 << 5) -> 3M
+...
+48M / (1 << 12) -> 11.7K
 
-#define BASE_BUS_SPEED 100000
-
+So 3M is the best we can do.
+*/
+#define BASE_BUS_SPEED 3000000
 
 static int bus_speed = BASE_BUS_SPEED;
 module_param(bus_speed, int, S_IRUGO);
 MODULE_PARM_DESC(bus_speed, "SPI bus speed in Hz");
 
-static int show_mknod_msg = 1;
 static int running = 0;
 
 struct adc_message {
-	u16 idx;
-	u16 avg;
+	u32 adc_id;
+	u32 avg;
 	struct list_head list;
 	struct completion completion;
 	struct spi_message msg;
@@ -68,8 +83,8 @@ struct adc_dev {
 	struct semaphore fop_sem;
 	dev_t devt;
 	struct cdev cdev;
-	struct spi_device *spi_device;	
-	struct adc_message adc_msg;
+	struct spi_device *spi_device[NUM_DEVICES];	
+	struct adc_message adc_msg[NUM_DEVICES];
 	char *user_buff;
 };
 
@@ -141,11 +156,15 @@ static int adc_async(struct adc_message *adc_msg)
 {
 	int i, status;
 	struct spi_message *message;
+	struct spi_device *spi_device;
 
 	if (down_interruptible(&adc_dev.spi_sem))
 		return -EFAULT;
 
-	if (adc_dev.spi_device == NULL) {
+	spi_device = adc_dev.spi_device[adc_msg->adc_id];
+
+	if (spi_device == NULL) {
+		printk(KERN_ALERT "adc_async(): spi_device is NULL\n");
 		status = -ESHUTDOWN;
 		goto adc_async_done;
 	}
@@ -157,23 +176,35 @@ static int adc_async(struct adc_message *adc_msg)
 	message->complete = adc_async_complete;
 	message->context = adc_msg;
 	
-	memset(adc_msg->tx_buff, 0, NUM_TRANSFERS * 2);
+	memset(adc_msg->tx_buff, 0, NUM_TRANSFERS * 2);		
 	memset(adc_msg->rx_buff, 0, NUM_TRANSFERS * 2);		
-
+	
 	adc_msg->tx_buff[0] = 0x40;
-
+	
 	memset(adc_msg->transfer, 0, NUM_TRANSFERS * sizeof(struct spi_transfer));
 
 	for (i = 0; i < NUM_TRANSFERS; i++) {
 		adc_msg->transfer[i].tx_buf = adc_msg->tx_buff;
 		adc_msg->transfer[i].rx_buf = &adc_msg->rx_buff[i*2];
 		adc_msg->transfer[i].len = 2;
+
+		/* we need the CS raised between each transfer (measurement) */
 		adc_msg->transfer[i].cs_change = 1;
-		adc_msg->transfer[i].speed_hz = 0;
+		
+		/* override the bus speed if needed */
+		if (spi_device->max_speed_hz != bus_speed)
+			adc_msg->transfer[i].speed_hz = bus_speed;
+		
+		/* put in a test delay between messages, signal analyzer debug stuff */
+		/*
+		if (i == NUM_TRANSFERS - 1)
+			adc_msg->transfer[i].delay_usecs = 50;
+		*/
+
 		spi_message_add_tail(&adc_msg->transfer[i], message);
 	}
-		
-	status = spi_async(adc_dev.spi_device, message);
+			
+	status = spi_async(spi_device, message);
 
 adc_async_done:
 
@@ -187,7 +218,8 @@ static ssize_t adc_write(struct file *filp, const char __user *buff,
 {
 	ssize_t	status;
 	size_t len;
-	
+	int i;
+
 	if(down_interruptible(&adc_dev.fop_sem))
 		return -ERESTARTSYS;
 
@@ -203,16 +235,19 @@ static ssize_t adc_write(struct file *filp, const char __user *buff,
 
 	/* we accept two commands, "on" or "off" and ignore anything else*/
 	if (!running && !strnicmp(adc_dev.user_buff, "on", 2)) {
-		status = adc_async(&adc_dev.adc_msg);
-		if (status)
-			printk(KERN_ALERT "adc_write(): adc_async() returned %d\n",
-				status);
-		else {
-			running = 1; 
-			status = count;
+		for (i = 0; i < NUM_DEVICES; i++) {
+			status = adc_async(&adc_dev.adc_msg[i]);
+			if (status) {
+				printk(KERN_ALERT 
+					"adc_write(): adc_async() returned %d\n",
+					status);
+				break;
+			} else {
+				running = 1; 
+				status = count;
+			}
 		}
-	}
-	else if (!strnicmp(adc_dev.user_buff, "off", 3)) {
+	} else if (!strnicmp(adc_dev.user_buff, "off", 3)) {
 		running = 0;
 	}
 
@@ -226,6 +261,8 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 			loff_t *offp)
 {
 	size_t len;
+	char temp[8];
+	int i;
 	ssize_t status = 0;
 
 	if (!buff) 
@@ -238,10 +275,18 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 	if (down_interruptible(&adc_dev.fop_sem)) 
 		return -ERESTARTSYS;
 
-	if (running)
-		sprintf(adc_dev.user_buff, "ADC: %u\n", adc_dev.adc_msg.avg);
-	else
+	if (running) {
+		strcpy(adc_dev.user_buff, "ADC:");
+
+		for (i = 0; i < NUM_DEVICES; i++) {
+			sprintf(temp, " %u", adc_dev.adc_msg[i].avg);
+			strcat(adc_dev.user_buff, temp);
+		}
+
+		strcat(adc_dev.user_buff, "\n");
+	} else {
 		strcpy(adc_dev.user_buff, "ADC: off\n");
+	}
 
 	len = strlen(adc_dev.user_buff);
  
@@ -251,8 +296,7 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 	if (copy_to_user(buff, adc_dev.user_buff, count))  {
 		printk(KERN_ALERT "adc_read(): copy_to_user() failed\n");
 		status = -EFAULT;
-	}
-	else {
+	} else {
 		*offp += count;
 		status = count;
 	}
@@ -288,35 +332,46 @@ static int adc_probe(struct spi_device *spi_device)
 	if (down_interruptible(&adc_dev.spi_sem))
 		return -EBUSY;
 
-	adc_dev.spi_device = spi_device;
-	spi_set_drvdata(spi_device, &adc_dev);	
+	if (spi_device->chip_select >= 0 && 
+		spi_device->chip_select < NUM_DEVICES) {
+		
+		adc_dev.spi_device[spi_device->chip_select] = spi_device;
 
-	adc_msg = &adc_dev.adc_msg;
+		adc_msg = &adc_dev.adc_msg[spi_device->chip_select];
+		adc_msg->adc_id = spi_device->chip_select;
+		
+		init_completion(&adc_msg->completion);
 
-	if (!adc_msg->transfer) {
-		adc_msg->transfer = kmalloc(NUM_TRANSFERS * sizeof(struct spi_transfer), 
-						GFP_KERNEL);
-		if (!adc_msg->transfer)
-			status = -ENOMEM;
-	}
+		if (!adc_msg->transfer) {
+			adc_msg->transfer = 
+				kmalloc(NUM_TRANSFERS * sizeof(struct spi_transfer), 
+					GFP_KERNEL);
+			if (!adc_msg->transfer) 
+				status = -ENOMEM;				
+		}
 	
-	if (!adc_msg->tx_buff) {
-		adc_msg->tx_buff = kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
-		if (!adc_msg->tx_buff) 
-			status = -ENOMEM;
-	}
+		if (!adc_msg->tx_buff) {
+			adc_msg->tx_buff = 
+				kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
+			if (!adc_msg->tx_buff) 
+				status = -ENOMEM;
+		}
 
-	if (!adc_msg->rx_buff) {
-		adc_msg->rx_buff = kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
-		if (!adc_msg->rx_buff) 
-			status = -ENOMEM;
+		if (!adc_msg->rx_buff) {
+			adc_msg->rx_buff = 
+				kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
+			if (!adc_msg->rx_buff) 
+				status = -ENOMEM;
+		}
+	} else {
+		status = -ENODEV;
 	}
-
-	if (bus_speed != spi_device->max_speed_hz) 
-		spi_device->max_speed_hz = bus_speed;
 
 	if (!status) 
-		printk(KERN_ALERT "SPI max_speed_hz %d Hz\n", bus_speed);
+		printk(KERN_ALERT "SPI[%d] max_speed_hz %d Hz  bus_speed %d Hz\n", 
+			spi_device->chip_select, 
+			spi_device->max_speed_hz, 
+			bus_speed);
 	
 	up(&adc_dev.spi_sem);
 
@@ -325,11 +380,26 @@ static int adc_probe(struct spi_device *spi_device)
 
 static int adc_remove(struct spi_device *spi_device)
 {
+	struct adc_message *adc_msg;
+
 	if (down_interruptible(&adc_dev.spi_sem))
 		return -EBUSY;
+	
+	if (spi_device->chip_select >= 0 && 
+		spi_device->chip_select < NUM_DEVICES) {
 
-	adc_dev.spi_device = NULL;
-	spi_set_drvdata(spi_device, NULL);
+		adc_dev.spi_device[spi_device->chip_select] = NULL;
+		adc_msg = &adc_dev.adc_msg[spi_device->chip_select];
+
+		if (adc_msg->transfer) 
+			kfree(adc_msg->transfer);
+
+		if (adc_msg->rx_buff)
+			kfree(adc_msg->rx_buff);
+
+		if (adc_msg->tx_buff)
+			kfree(adc_msg->tx_buff);
+	}
 
 	up(&adc_dev.spi_sem);
 
@@ -341,6 +411,7 @@ static int __init add_adc_device_to_bus(void)
 	struct spi_master *spi_master;
 	struct spi_device *spi_device;
 	int status;
+	int i;
 	char buff[64];
 
 	spi_master = spi_busnum_to_master(1);
@@ -351,10 +422,16 @@ static int __init add_adc_device_to_bus(void)
 		return -1;
 	}
 
-	spi_device = spi_alloc_device(spi_master);
+	for (i = 0; i < NUM_DEVICES; i++) {
+		spi_device = spi_alloc_device(spi_master);
 
-	if (spi_device) {
-		spi_device->chip_select = 0;
+		if (!spi_device) {
+			status = -1;
+			printk(KERN_ALERT "spi_alloc_device() failed\n");
+			break;
+		}
+
+		spi_device->chip_select = i;
 
 		/* first check if the bus already knows about us */
 		snprintf(buff, sizeof(buff), "%s.%u", dev_name(&spi_device->master->dev),
@@ -362,12 +439,10 @@ static int __init add_adc_device_to_bus(void)
 
 		if (bus_find_device_by_name(spi_device->dev.bus, NULL, buff)) {
 			/* we are already registered, nothing to do, just free the spi_device 
-			   this crashes unless you have a patched omap2_mcspi_cleanup9) */
+			   this crashes unless you have a patched omap2_mcspi_cleanup() */
 			spi_dev_put(spi_device);
 			status = 0;
-			show_mknod_msg = 0;		
-		}
-		else {
+		} else {
 			spi_device->max_speed_hz = bus_speed;
 			spi_device->mode = SPI_MODE_0;
 			spi_device->bits_per_word = 8;
@@ -383,10 +458,6 @@ static int __init add_adc_device_to_bus(void)
 				printk(KERN_ALERT "spi_add_device() failed: %d\n", status);		
 			}				
 		}
-	}
-	else {
-		status = -1;
-		printk(KERN_ALERT "spi_alloc_device() failed\n");
 	}
 
 	put_device(&spi_master->dev);
@@ -462,8 +533,6 @@ static int __init adc_init(void)
 	sema_init(&adc_dev.spi_sem, 1);
 	sema_init(&adc_dev.fop_sem, 1);
 	
-	init_completion(&adc_dev.adc_msg.completion);
-
 	if (adc_cdev_setup() < 0) {
 		printk(KERN_ALERT "adc_cdev_setup() failed\n");
 		goto fail_1;
@@ -474,8 +543,7 @@ static int __init adc_init(void)
 		goto fail_2;
 	}
 
-	if (show_mknod_msg) 
-		printk(KERN_ALERT "Verify : mknod /dev/adc c %d %d\n", 
+	printk(KERN_ALERT "Run : mknod /dev/adc c %d %d\n", 
 			MAJOR(adc_dev.devt), MINOR(adc_dev.devt));
 
 	return 0;
@@ -490,19 +558,9 @@ fail_1:
 
 static void __exit adc_exit(void)
 {
-	struct adc_message *adc_msg;
-
 	spi_unregister_driver(&adc_spi);
 	cdev_del(&adc_dev.cdev);
 	unregister_chrdev_region(adc_dev.devt, 1);
-
-	adc_msg = &adc_dev.adc_msg;
-
-	if (adc_msg->rx_buff)
-		kfree(adc_msg->rx_buff);
-
-	if (adc_msg->tx_buff)
-		kfree(adc_msg->tx_buff);
 
 	if (adc_dev.user_buff)
 		kfree(adc_dev.user_buff);
