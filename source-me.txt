@@ -3,8 +3,8 @@ if [[ -z "${KERNEL_CROSS_BUILD_ENVIRONMENT_SOURCED}" ]]; then
 
 	# normally OETMP will be ${OVEROTOP}/tmp, but really it is whatever TMPDIR
 	# in ${OVEROTOP}/build/conf/site.conf points to.
-	# OETMP=${OVEROTOP}/tmp
-	OETMP=/gum2/tmp
+	OETMP=${OVEROTOP}/tmp
+	# OETMP=/gum2/tmp
 
 	# It would be nice to find a way to pick the current kernel out of the OE config 
 	# Until then, have to manually point this at the kernel source   
