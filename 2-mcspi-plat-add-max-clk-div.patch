@@ -1,51 +1,42 @@
 diff --git git/arch/arm/mach-omap2/devices.c git/arch/arm/mach-omap2/devices.c
-index 23e4d77..d4ad126 100644
+index 23e4d77..200f382 100644
 --- git/arch/arm/mach-omap2/devices.c
 +++ git/arch/arm/mach-omap2/devices.c
-@@ -302,6 +302,11 @@ static inline void omap_init_sti(void) {}
- 
- static struct omap2_mcspi_platform_config omap2_mcspi1_config = {
- 	.num_cs		= 4,
-+#if defined(CONFIG_ARCH_OMAP3) || defined(CONFIG_ARCH_OMAP4)
-+	.max_clk_div	= 0x0c,
-+#else
-+	.max_clk_div	= 0x0f,
-+#endif
- };
- 
- static struct resource omap2_mcspi1_resources[] = {
-@@ -324,6 +329,11 @@ static struct platform_device omap2_mcspi1 = {
- 
- static struct omap2_mcspi_platform_config omap2_mcspi2_config = {
- 	.num_cs		= 2,
-+#if defined(CONFIG_ARCH_OMAP3) || defined(CONFIG_ARCH_OMAP4)
-+	.max_clk_div	= 0x0c,
-+#else
-+	.max_clk_div	= 0x0f,
-+#endif
- };
- 
- static struct resource omap2_mcspi2_resources[] = {
-@@ -348,6 +358,11 @@ static struct platform_device omap2_mcspi2 = {
+@@ -415,6 +415,11 @@ static inline void omap4_mcspi_fixup(void)
  	defined(CONFIG_ARCH_OMAP4)
- static struct omap2_mcspi_platform_config omap2_mcspi3_config = {
- 	.num_cs		= 2,
-+#if defined(CONFIG_ARCH_OMAP3) || defined(CONFIG_ARCH_OMAP4)
-+	.max_clk_div	= 0x0c,
-+#else
-+	.max_clk_div	= 0x0f,
-+#endif
- };
- 
- static struct resource omap2_mcspi3_resources[] = {
-@@ -372,6 +387,7 @@ static struct platform_device omap2_mcspi3 = {
+ static inline void omap2_mcspi3_init(void)
+ {
++	if (cpu_is_omap343x() || cpu_is_omap44xx())
++		omap2_mcspi3_config.max_clk_div = 0x0c;
++	else
++		omap2_mcspi3_config.max_clk_div = 0x0f;
++
+ 	platform_device_register(&omap2_mcspi3);
+ }
+ #else
+@@ -426,6 +431,7 @@ static inline void omap2_mcspi3_init(void)
  #if defined(CONFIG_ARCH_OMAP3) || defined(CONFIG_ARCH_OMAP4)
- static struct omap2_mcspi_platform_config omap2_mcspi4_config = {
- 	.num_cs		= 1,
-+	.max_clk_div	= 0x0c,
- };
+ static inline void omap2_mcspi4_init(void)
+ {
++	omap2_mcspi4_config.max_clk_div = 0x0c;
+ 	platform_device_register(&omap2_mcspi4);
+ }
+ #else
+@@ -439,6 +445,14 @@ static void omap_init_mcspi(void)
+ 	if (cpu_is_omap44xx())
+ 		omap4_mcspi_fixup();
  
- static struct resource omap2_mcspi4_resources[] = {
++	if (cpu_is_omap343x() || cpu_is_omap44xx()) {
++		omap2_mcspi1_config.max_clk_div = 0x0c;
++		omap2_mcspi2_config.max_clk_div = 0x0c;
++	} else {
++		omap2_mcspi1_config.max_clk_div = 0x0f;
++		omap2_mcspi2_config.max_clk_div = 0x0f;
++	}
++
+ 	platform_device_register(&omap2_mcspi1);
+ 	platform_device_register(&omap2_mcspi2);
+ 
 diff --git git/arch/arm/plat-omap/include/plat/mcspi.h git/arch/arm/plat-omap/include/plat/mcspi.h
 index 1254e49..9fadddd 100644
 --- git/arch/arm/plat-omap/include/plat/mcspi.h
