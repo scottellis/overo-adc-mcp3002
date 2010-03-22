@@ -18,7 +18,7 @@ but it may be awhile before they show up in the gumstix kernel.
 
 I provided the patches in this project until then.
 
-Assuming your running 2.6.32, copy the patches 1-6 to 
+Assuming your running 2.6.32, copy the patches 1 and 2 to 
 
 ../recipes/linux/linux-omap3-2.6.32/
 
@@ -26,18 +26,20 @@ and then patch your
 
 ../recipes/linux/linux-omap3_2.6.32.bb 
 
-with the recipe patch.
+to look like the one in this project or just use this one.
 
 The interface is a character device. It will prompt you for the mknod
 command when you insert the module.
 
 The write commands are on and off
-echo on > /dev/adc
-echo off > /dev/adc
+root@overo# echo on > /dev/adc
+root@overo# echo off > /dev/adc
 
 The read command returns either
+root@overo# cat /dev/adc
 ADC: off
 or 
+root@overo# cat /dev/adc
 ADC: <adc_1_val> <adc_2_val>
 
 The omap2_mcspi module needs to be loaded before adc.ko
