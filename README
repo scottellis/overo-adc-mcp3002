@@ -28,8 +28,8 @@ and then patch your
 
 to look like the one in this project or just use this one.
 
-The interface is a character device. It will prompt you for the mknod
-command when you insert the module.
+The interface is a character device. The /dev/adc node will be created
+when you load the module.
 
 The write commands are on and off
 root@overo# echo on > /dev/adc
