@@ -83,6 +83,7 @@ struct adc_dev {
 	struct semaphore fop_sem;
 	dev_t devt;
 	struct cdev cdev;
+	struct class *class;
 	struct spi_device *spi_device[NUM_DEVICES];	
 	struct adc_message adc_msg[NUM_DEVICES];
 	char *user_buff;
@@ -434,12 +435,16 @@ static int __init add_adc_device_to_bus(void)
 		spi_device->chip_select = i;
 
 		/* first check if the bus already knows about us */
-		snprintf(buff, sizeof(buff), "%s.%u", dev_name(&spi_device->master->dev),
-			spi_device->chip_select);
+		snprintf(buff, sizeof(buff), "%s.%u", 
+				dev_name(&spi_device->master->dev),
+				spi_device->chip_select);
 
 		if (bus_find_device_by_name(spi_device->dev.bus, NULL, buff)) {
-			/* we are already registered, nothing to do, just free the spi_device 
-			   this crashes unless you have a patched omap2_mcspi_cleanup() */
+			/* 
+			We are already registered, nothing to do, just free
+			the spi_device. Crashes without a patched 
+			omap2_mcspi_cleanup() 
+			*/
 			spi_dev_put(spi_device);
 			status = 0;
 		} else {
@@ -453,9 +458,13 @@ static int __init add_adc_device_to_bus(void)
 			status = spi_add_device(spi_device);
 		
 			if (status < 0) {	
-				/* this will crash you unless you have patched omap2_mcspi_cleanup() */	
+				/* 
+				crashes without a patched 
+				omap2_mcspi_cleanup() 
+				*/	
 				spi_dev_put(spi_device);
-				printk(KERN_ALERT "spi_add_device() failed: %d\n", status);		
+				printk(KERN_ALERT "spi_add_device() failed: %d\n", 
+					status);		
 			}				
 		}
 	}
@@ -474,7 +483,7 @@ static struct spi_driver adc_spi = {
 	.remove = __devexit_p(adc_remove),	
 };
 
-static int __init adc_spi_setup(void)
+static int __init adc_init_spi(void)
 {
 	int error;
 
@@ -500,28 +509,45 @@ static const struct file_operations adc_fops = {
 	.open =		adc_open,	
 };
 
-static int __init adc_cdev_setup(void)
+static int __init adc_init_cdev(void)
 {
 	int error;
 
 	adc_dev.devt = MKDEV(0, 0);
 
 	if ((error = alloc_chrdev_region(&adc_dev.devt, 0, 1, "adc")) < 0) {
-		printk(KERN_ALERT "alloc_chrdev_region() failed: error = %d \n", 
+		printk(KERN_ALERT "alloc_chrdev_region() failed: %d \n", 
 			error);
 		return -1;
 	}
 
 	cdev_init(&adc_dev.cdev, &adc_fops);
 	adc_dev.cdev.owner = THIS_MODULE;
-	adc_dev.cdev.ops = &adc_fops;
-
+	
 	error = cdev_add(&adc_dev.cdev, adc_dev.devt, 1);
 	if (error) {
-		printk(KERN_ALERT "cdev_add() failed: error = %d\n", error);
+		printk(KERN_ALERT "cdev_add() failed: %d\n", error);
 		unregister_chrdev_region(adc_dev.devt, 1);
 		return -1;
 	}	
+
+	return 0;
+}
+
+static int __init adc_init_class(void)
+{
+	adc_dev.class = class_create(THIS_MODULE, "adc");
+
+	if (!adc_dev.class) {
+		printk(KERN_ALERT "class_create() failed\n");
+		return -1;
+	}
+
+	if (!device_create(adc_dev.class, NULL, adc_dev.devt, NULL, "adc")) {
+		printk(KERN_ALERT "device_create(..., adc) failed\n");
+		class_destroy(adc_dev.class);
+		return -1;
+	}
 
 	return 0;
 }
@@ -533,20 +559,20 @@ static int __init adc_init(void)
 	sema_init(&adc_dev.spi_sem, 1);
 	sema_init(&adc_dev.fop_sem, 1);
 	
-	if (adc_cdev_setup() < 0) {
-		printk(KERN_ALERT "adc_cdev_setup() failed\n");
+	if (adc_init_cdev() < 0) 
 		goto fail_1;
-	}
 	
-	if (adc_spi_setup() < 0) {
-		printk(KERN_ALERT "adc_spi_setup() failed\n");
+	if (adc_init_class() < 0)  
 		goto fail_2;
-	}
 
-	printk(KERN_ALERT "Run : mknod /dev/adc c %d %d\n", 
-			MAJOR(adc_dev.devt), MINOR(adc_dev.devt));
+	if (adc_init_spi() < 0) 
+		goto fail_3;
 
 	return 0;
+
+fail_3:
+	device_destroy(adc_dev.class, adc_dev.devt);
+	class_destroy(adc_dev.class);
 
 fail_2:
 	cdev_del(&adc_dev.cdev);
@@ -559,6 +585,10 @@ fail_1:
 static void __exit adc_exit(void)
 {
 	spi_unregister_driver(&adc_spi);
+
+	device_destroy(adc_dev.class, adc_dev.devt);
+	class_destroy(adc_dev.class);
+
 	cdev_del(&adc_dev.cdev);
 	unregister_chrdev_region(adc_dev.devt, 1);
 
@@ -570,6 +600,6 @@ module_init(adc_init);
 module_exit(adc_exit);
 
 MODULE_AUTHOR("Scott Ellis");
-MODULE_DESCRIPTION("SPI OMAP3 experimental ADC driver");
+MODULE_DESCRIPTION("SPI experimental MCP3002 ADC driver");
 MODULE_LICENSE("GPL");
 
