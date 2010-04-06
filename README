@@ -13,8 +13,8 @@ either as a module or built-in or you won't be able to load this device.
 Can't have two devices asking for the same CS0 line.
 
 There are some required kernel patches in order to handle the dynamic 
-adding of spi devices. They've all been submitted to the linux-omap list
-but it may be awhile before they show up in the gumstix kernel.  
+adding of spi devices. I submitted them to the linux-omap list, but it 
+may be awhile before they show up in the gumstix kernel.  
 
 I provided the patches in this project until then.
 
