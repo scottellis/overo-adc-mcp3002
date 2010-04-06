@@ -48,16 +48,18 @@
 /* 
 At 5v the max speed the MCP3002's can handle is 200k samples/sec.
 At 16 bits per sample this translates to 3.2M as the max clock speed.
-The McSPI controller available speeds are
-48M / (1 << 1) -> 48M
-48M / (1 << 2) -> 24M
-48M / (1 << 3) -> 12M
-48M / (1 << 4) -> 6M
-48M / (1 << 5) -> 3M
-...
-48M / (1 << 12) -> 11.7K
 
-So 3M is the best we can do.
+The McSPI controller available speeds are
+
+48M / (1 << 0) -> 48 MHz
+48M / (1 << 1) -> 24 MHz
+48M / (1 << 2) -> 12 MHz
+48M / (1 << 3) -> 6 MHz
+48M / (1 << 4) -> 3 MHz
+...
+48M / (1 << 15) -> 1465 Hz
+
+So 3 MHz is the best we can do.
 */
 #define BASE_BUS_SPEED 3000000
 
