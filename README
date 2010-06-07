@@ -5,7 +5,7 @@ hooked up to CS0 and CS1.
 This driver probably works with Beagleboards too, with some changes for the
 exposed SPI module. I haven't checked yet.
 
-The Makefile assumes you are using the included source-me.txt and have a
+The Makefile assumes you are using the included overo-source-me.txt and have a
 working OE cross-build environment set up.
 
 You should not have the ADS7846 touchscreen driver enabled in your kernel
@@ -17,6 +17,8 @@ adding of spi devices. I submitted them to the linux-omap list, but it
 may be awhile before they show up in the gumstix kernel.  
 
 I provided the patches in this project until then.
+
+Update: The patches were accepted into 2.6.34 mainline
 
 Assuming your running 2.6.32, copy the patches 1 and 2 to 
 
