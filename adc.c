@@ -67,6 +67,8 @@ static int bus_speed = BASE_BUS_SPEED;
 module_param(bus_speed, int, S_IRUGO);
 MODULE_PARM_DESC(bus_speed, "SPI bus speed in Hz");
 
+const char this_driver_name[] = "adc";
+
 static int running = 0;
 
 struct adc_message {
@@ -413,12 +415,12 @@ static int __init add_adc_device_to_bus(void)
 {
 	struct spi_master *spi_master;
 	struct spi_device *spi_device;
+	struct device *pdev;
 	int status;
 	int i;
 	char buff[64];
 
 	spi_master = spi_busnum_to_master(1);
-
 	if (!spi_master) {
 		printk(KERN_ALERT "spi_busnum_to_master(1) returned NULL\n");
 		printk(KERN_ALERT "Missing modprobe omap2_mcspi?\n");
@@ -441,14 +443,24 @@ static int __init add_adc_device_to_bus(void)
 				dev_name(&spi_device->master->dev),
 				spi_device->chip_select);
 
-		if (bus_find_device_by_name(spi_device->dev.bus, NULL, buff)) {
-			/* 
-			We are already registered, nothing to do, just free
-			the spi_device. Crashes without a patched 
-			omap2_mcspi_cleanup() 
-			*/
+		pdev = bus_find_device_by_name(spi_device->dev.bus, NULL, buff);
+	 	if (pdev) {
+			/* We are not going to use this spi_device */ 
 			spi_dev_put(spi_device);
-			status = 0;
+		
+			/* 
+			 * There is already a device configured for this bus.cs  
+			 * It is okay if it us, otherwise complain and fail.
+			 */
+			if (pdev->driver && pdev->driver->name 
+				&& strcmp(this_driver_name, 
+						pdev->driver->name)) {
+				printk(KERN_ALERT 
+					"Driver [%s] already registered for %s\n",
+					pdev->driver->name, buff);
+				status = -1;
+				break;
+			} 
 		} else {
 			spi_device->max_speed_hz = bus_speed;
 			spi_device->mode = SPI_MODE_0;
@@ -456,16 +468,14 @@ static int __init add_adc_device_to_bus(void)
 			spi_device->irq = -1;
 			spi_device->controller_state = NULL;
 			spi_device->controller_data = NULL;
-			strlcpy(spi_device->modalias, "adc", SPI_NAME_SIZE);
+			strlcpy(spi_device->modalias, this_driver_name, 
+				SPI_NAME_SIZE);
+
 			status = spi_add_device(spi_device);
-		
 			if (status < 0) {	
-				/* 
-				crashes without a patched 
-				omap2_mcspi_cleanup() 
-				*/	
 				spi_dev_put(spi_device);
-				printk(KERN_ALERT "spi_add_device() failed: %d\n", 
+				printk(KERN_ALERT 
+					"spi_add_device() failed: %d\n", 
 					status);		
 			}				
 		}
@@ -478,7 +488,7 @@ static int __init add_adc_device_to_bus(void)
 
 static struct spi_driver adc_spi = {
 	.driver = {
-		.name =	"adc",
+		.name =	this_driver_name,
 		.owner = THIS_MODULE,
 	},
 	.probe = adc_probe,
@@ -517,7 +527,8 @@ static int __init adc_init_cdev(void)
 
 	adc_dev.devt = MKDEV(0, 0);
 
-	if ((error = alloc_chrdev_region(&adc_dev.devt, 0, 1, "adc")) < 0) {
+	if ((error = alloc_chrdev_region(&adc_dev.devt, 0, 1, 
+					this_driver_name)) < 0) {
 		printk(KERN_ALERT "alloc_chrdev_region() failed: %d \n", 
 			error);
 		return -1;
@@ -538,15 +549,17 @@ static int __init adc_init_cdev(void)
 
 static int __init adc_init_class(void)
 {
-	adc_dev.class = class_create(THIS_MODULE, "adc");
+	adc_dev.class = class_create(THIS_MODULE, this_driver_name);
 
 	if (!adc_dev.class) {
 		printk(KERN_ALERT "class_create() failed\n");
 		return -1;
 	}
 
-	if (!device_create(adc_dev.class, NULL, adc_dev.devt, NULL, "adc")) {
-		printk(KERN_ALERT "device_create(..., adc) failed\n");
+	if (!device_create(adc_dev.class, NULL, adc_dev.devt, NULL, 
+			this_driver_name)) {
+		printk(KERN_ALERT "device_create(..., %s) failed\n",
+			this_driver_name);
 		class_destroy(adc_dev.class);
 		return -1;
 	}
